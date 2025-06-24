@@ -4,3 +4,4 @@ openai
 python-dotenv
 yfinance
 requests
+matplotlib
