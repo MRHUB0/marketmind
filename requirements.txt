@@ -2,3 +2,5 @@ streamlit
 firebase-admin
 openai
 python-dotenv
+yfinance
+requests
