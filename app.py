@@ -38,7 +38,7 @@ if analyze and ticker:
 
     try:
         response = client.chat.completions.create(
-            model=os.getenv("DEPLOYMENT_NAME"),
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7
         )
