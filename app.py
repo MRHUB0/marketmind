@@ -4,8 +4,10 @@ import os
 import requests
 from openai import AzureOpenAI
 import json
+import yfinance as yf
 import pandas as pd
-import time
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 # Azure OpenAI setup
 client = AzureOpenAI(
@@ -14,55 +16,69 @@ client = AzureOpenAI(
     api_version="2023-07-01-preview"
 )
 
-st.set_page_config(page_title="MarketMind", layout="centered")
+# UI Config
+st.set_page_config(page_title="MarketMind", layout="centered", page_icon="📊")
+st.markdown("""
+    <style>
+        .buy {color: green; font-size: 26px; font-weight: bold;}
+        .hold {color: orange; font-size: 26px; font-weight: bold;}
+        .sell {color: red; font-size: 26px; font-weight: bold;}
+    </style>
+""", unsafe_allow_html=True)
 
-# Firebase login
+# Firebase Login
 user = login_with_firebase()
 if not user:
     st.stop()
 
+# Title and Form
+st.image("logo.png", width=100)
 st.title("📊 MarketMind - Crypto & Stock Sentiment Bot")
+ticker = st.text_input("Enter a crypto or stock ticker (e.g. BTC, ETH, TSLA):")
+analyze = st.button("Analyze Sentiment")
 
-ticker = st.text_input("Enter a crypto or stock ticker (e.g. BTC, ETH, TSLA):").upper()
+# Crypto Symbol Map
+def map_symbol_to_coingecko_id(symbol):
+    return {
+        "BTC": "bitcoin",
+        "ETH": "ethereum",
+        "LTC": "litecoin",
+        "XRP": "ripple",
+        "DOGE": "dogecoin"
+    }.get(symbol.upper())
 
-# Placeholder for animated transition
-recommendation_container = st.empty()
+# Chart Generator
+def get_price_chart(symbol):
+    coingecko_id = map_symbol_to_coingecko_id(symbol)
+    if coingecko_id:
+        url = f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/market_chart?vs_currency=usd&days=1"
+        data = requests.get(url).json()
+        prices = data.get("prices", [])
+        if prices:
+            df = pd.DataFrame(prices, columns=["timestamp", "price"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+            df.set_index("timestamp", inplace=True)
+            return df
+    else:
+        try:
+            stock = yf.Ticker(symbol)
+            df = stock.history(period="1d", interval="5m")
+            if not df.empty:
+                return df.rename(columns={"Close": "price"})[["price"]]
+        except:
+            return None
+    return None
 
-# Check previous result
-if "result" not in st.session_state:
-    st.session_state.result = ""
-if "recommendation" not in st.session_state:
-    st.session_state.recommendation = ""
-if "color" not in st.session_state:
-    st.session_state.color = ""
-if "emoji" not in st.session_state:
-    st.session_state.emoji = ""
-
-# Display prior recommendation
-if st.session_state.recommendation:
-    recommendation_container.markdown(
-        f"""<div style='font-size:24px; font-weight:bold; color:{st.session_state.color}; 
-             transition: all 0.5s ease-in-out'>
-            📈 {ticker} — <span>{st.session_state.recommendation} {st.session_state.emoji}</span>
-        </div><hr>""",
-        unsafe_allow_html=True
-    )
-
-# Analyze button
-if st.button("Analyze") and ticker:
+# Main Logic
+if analyze and ticker:
     usage = check_usage(user["uid"])
-    if usage >= 5:
-        st.warning("🚧 Free limit reached. Please subscribe for unlimited access.")
+    if usage >= 10:
+        st.warning("🚧 Free limit reached. Subscribe for unlimited access.")
         st.markdown("[Subscribe Here](https://your-stripe-checkout-url)")
         st.stop()
 
-    headlines = f"Recent news about {ticker}: price fluctuation, market sentiment, trading volume."
-
-    prompt = (
-        f"Summarize recent crypto/stock sentiment for {ticker}. "
-        f"News: {headlines}. "
-        "Provide a summary, sentiment score (1-10), and clear Buy, Sell, or Hold recommendation."
-    )
+    headlines = f"Recent news about {ticker.upper()}: price fluctuation, market sentiment, trading volume."
+    prompt = f"Summarize recent crypto or stock sentiment for {ticker.upper()}. News: {headlines}. Provide a summary, sentiment score (0-100), and Buy/Sell/Hold advice."
 
     try:
         response = client.chat.completions.create(
@@ -70,68 +86,35 @@ if st.button("Analyze") and ticker:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7
         )
-        result = response.choices[0].message.content.lower()
+        result = response.choices[0].message.content
 
-        # Detect recommendation
-        recommendation = "Hold"
-        color = "orange"
-        emoji = "⚖️"
-        if "buy" in result:
-            recommendation = "Buy"
-            color = "green"
-            emoji = "🟢"
-        elif "sell" in result:
-            recommendation = "Sell"
-            color = "red"
-            emoji = "🔴"
+        # Basic Recommendation Detection
+        lower_result = result.lower()
+        if "buy" in lower_result:
+            rec = "Buy"
+        elif "sell" in lower_result:
+            rec = "Sell"
+        else:
+            rec = "Hold"
 
-        # Save state
-        st.session_state.result = result
-        st.session_state.recommendation = recommendation
-        st.session_state.color = color
-        st.session_state.emoji = emoji
+        emoji = {"Buy": "🟢", "Hold": "🟠", "Sell": "🔴"}[rec]
+        color_class = rec.lower()
+        st.markdown(f"<div class='{color_class}'>{emoji} {rec} recommendation for {ticker.upper()}</div>", unsafe_allow_html=True)
+        st.write(result)
 
-        # Animated color change
-        for _ in range(3):
-            recommendation_container.markdown(
-                f"""<div style='font-size:24px; font-weight:bold; color:{color}; 
-                     transition: all 0.5s ease-in-out'>
-                    📈 {ticker} — <span>{recommendation} {emoji}</span>
-                </div><hr>""",
-                unsafe_allow_html=True
-            )
-            time.sleep(0.3)
+        df = get_price_chart(ticker.upper())
+        if df is not None:
+            st.subheader(f"📈 Intraday Price for {ticker.upper()}")
+            fig, ax = plt.subplots()
+            df["price"].plot(ax=ax, color="skyblue", linewidth=2)
+            ax.set_title(f"{ticker.upper()} - {datetime.now().strftime('%Y-%m-%d')}")
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Price (USD)")
+            st.pyplot(fig)
+        else:
+            st.warning("📉 No price data found. May be an unsupported symbol on CoinGecko or Yahoo Finance.")
 
         save_insight(user["uid"], ticker, result)
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
-
-# Full analysis output
-if st.session_state.result:
-    st.subheader("📄 Full Analysis")
-    st.write(st.session_state.result)
-
-# Real-time price chart
-def get_price_chart(symbol):
-    try:
-        url = f"https://api.coingecko.com/api/v3/coins/{symbol.lower()}/market_chart?vs_currency=usd&days=1"
-        res = requests.get(url).json()
-        prices = res.get("prices", [])
-        if not prices:
-            return None
-        df = pd.DataFrame(prices, columns=["timestamp", "price"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
-        return df
-    except:
-        return None
-
-# Display chart if crypto
-if ticker:
-    st.subheader(f"📉 Intraday Price for {ticker}")
-    price_data = get_price_chart(ticker)
-    if price_data is not None:
-        st.line_chart(price_data["price"])
-    else:
-        st.info("No price data found. This may not be a supported crypto on CoinGecko.")
