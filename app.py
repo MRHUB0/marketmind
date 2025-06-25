@@ -4,86 +4,60 @@ import matplotlib.pyplot as plt
 import requests
 import os
 from datetime import datetime, timedelta
-from openai import OpenAI
+from openai import AzureOpenAI
 from dotenv import load_dotenv
 
-# Load .env variables (if running locally)
+# Load local .env if running locally
 load_dotenv()
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Azure OpenAI client
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version="2024-05-01-preview",  # Change if you're using a different API version
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT")
+)
 
+# Streamlit UI
 st.set_page_config(page_title="Market Mind", layout="centered")
 st.markdown("<h1 style='text-align: center;'>🧠 Market Mind</h1>", unsafe_allow_html=True)
 st.markdown("<h3 style='text-align: center;'>AI-powered crypto & stock sentiment bot</h3>", unsafe_allow_html=True)
 
 ticker_input = st.text_input("Enter a crypto or stock ticker (e.g. BTC, ETH, TSLA):", value="")
 
-def get_sentiment_recommendation(ticker):
-    prompt = f"You are a financial sentiment analyst. Would you recommend buying, holding, or selling {ticker} today? Reply with only one word: Buy, Hold, or Sell."
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        sentiment = response.choices[0].message.content.strip().capitalize()
-        return sentiment
-    except Exception as e:
-        return f"Error: {e}"
-
-def get_crypto_price_data(ticker):
-    url = f"https://api.coingecko.com/api/v3/coins/{ticker.lower()}/market_chart?vs_currency=usd&days=1&interval=hourly"
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    prices = r.json().get("prices", [])
-    return [(datetime.fromtimestamp(p[0] / 1000), p[1]) for p in prices]
-
-def plot_price_chart(data, label):
-    times, values = zip(*data)
-    fig, ax = plt.subplots()
-    ax.plot(times, values, marker='o', linewidth=2)
-    ax.set_title(f"Intraday Price for {label.upper()}")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Price (USD)")
-    ax.grid(True)
-    st.pyplot(fig)
-
-def show_recommendation(rec):
-    color_map = {"Buy": "green", "Hold": "orange", "Sell": "red"}
-    emoji_map = {"Buy": "🟢", "Hold": "🟠", "Sell": "🔴"}
-    color = color_map.get(rec, "gray")
-    emoji = emoji_map.get(rec, "❓")
-    st.markdown(
-        f"<h2 style='text-align:center; color:{color};'>Recommendation: {rec} {emoji}</h2>",
-        unsafe_allow_html=True
-    )
-
 if st.button("Analyze") and ticker_input:
-    st.subheader(f"🔍 Analyzing {ticker_input.upper()}...")
+    st.markdown(f"🔍 **Analyzing {ticker_input.upper()}...**")
+    
+    try:
+        # AI recommendation from Azure OpenAI
+        prompt = f"You are a financial sentiment analyst. Would you recommend buying, holding, or selling {ticker_input.upper()} today? Reply with a one-sentence recommendation."
+        response = client.chat.completions.create(
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),  # this must match your deployment name
+            messages=[{"role": "system", "content": "You are a financial analyst."},
+                      {"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=100
+        )
+        ai_reply = response.choices[0].message.content.strip()
+        st.markdown(f"📊 **Recommendation:** {ai_reply}")
+    
+    except Exception as e:
+        st.error(f"Recommendation: ❌ Error - {e}")
 
-    # Get recommendation
-    recommendation = get_sentiment_recommendation(ticker_input)
-    show_recommendation(recommendation)
-
-    # Try crypto price chart
-    crypto_data = get_crypto_price_data(ticker_input)
-    if crypto_data:
-        plot_price_chart(crypto_data, ticker_input)
-    else:
-        # Fallback to stock price if not a crypto
-        try:
-            stock = yf.Ticker(ticker_input.upper())
-            hist = stock.history(period="1d", interval="1h")
-            if not hist.empty:
-                st.subheader(f"📈 Intraday Price for {ticker_input.upper()}")
-                fig, ax = plt.subplots()
-                ax.plot(hist.index, hist["Close"], marker='o')
-                ax.set_title(f"Intraday Price for {ticker_input.upper()}")
-                ax.set_xlabel("Time")
-                ax.set_ylabel("Price (USD)")
-                st.pyplot(fig)
-            else:
-                st.info("No price data found for this symbol.")
-        except Exception as e:
-            st.error(f"Failed to fetch price data: {e}")
+    # Show intraday stock/crypto data using yfinance
+    try:
+        ticker = yf.Ticker(ticker_input)
+        hist = ticker.history(period="1d", interval="15m")
+        if hist.empty:
+            st.warning("No intraday data found for this ticker.")
+        else:
+            st.markdown(f"📈 **Intraday Price for {ticker_input.upper()}**")
+            plt.figure()
+            plt.plot(hist.index, hist['Close'], marker='o')
+            plt.title(f"Intraday Price for {ticker_input.upper()}")
+            plt.xlabel("Time")
+            plt.ylabel("Price (USD)")
+            plt.xticks(rotation=45)
+            st.pyplot(plt.gcf())
+    except Exception as e:
+        st.error(f"Price chart error: {e}")
