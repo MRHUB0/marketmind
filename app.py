@@ -2,72 +2,88 @@ import streamlit as st
 import yfinance as yf
 import matplotlib.pyplot as plt
 import requests
-import datetime
-import openai
 import os
+from datetime import datetime, timedelta
+from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load .env variables (if running locally)
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Streamlit App Configuration
-st.set_page_config(page_title="Market Mind", layout="wide", page_icon="📊")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# App Header
-st.markdown("<h1 style='text-align: center;'>📊 Market Mind</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center;'>AI-powered crypto & stock sentiment bot</h4>", unsafe_allow_html=True)
+st.set_page_config(page_title="Market Mind", layout="centered")
+st.markdown("<h1 style='text-align: center;'>🧠 Market Mind</h1>", unsafe_allow_html=True)
+st.markdown("<h3 style='text-align: center;'>AI-powered crypto & stock sentiment bot</h3>", unsafe_allow_html=True)
 
-# User Input
-symbol = st.text_input("Enter a crypto or stock ticker (e.g. BTC, ETH, TSLA):")
-submit = st.button("Analyze")
+ticker_input = st.text_input("Enter a crypto or stock ticker (e.g. BTC, ETH, TSLA):", value="")
 
-# Function to fetch sentiment
 def get_sentiment_recommendation(ticker):
-    prompt = f"You're an expert financial advisor. Based on recent market sentiment, would you recommend buying, holding, or selling {ticker}? Respond with one word: Buy, Hold, or Sell."
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response['choices'][0]['message']['content'].strip().capitalize()
-
-# Function to fetch historical price data
-def get_price_chart(ticker):
-    end = datetime.datetime.today()
-    start = end - datetime.timedelta(days=30)
+    prompt = f"You are a financial sentiment analyst. Would you recommend buying, holding, or selling {ticker} today? Reply with only one word: Buy, Hold, or Sell."
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(start=start, end=end)
-        if hist.empty:
-            return None
-        return hist
-    except:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        sentiment = response.choices[0].message.content.strip().capitalize()
+        return sentiment
+    except Exception as e:
+        return f"Error: {e}"
+
+def get_crypto_price_data(ticker):
+    url = f"https://api.coingecko.com/api/v3/coins/{ticker.lower()}/market_chart?vs_currency=usd&days=1&interval=hourly"
+    r = requests.get(url)
+    if r.status_code != 200:
         return None
+    prices = r.json().get("prices", [])
+    return [(datetime.fromtimestamp(p[0] / 1000), p[1]) for p in prices]
 
-# Map recommendation to color and emoji
-def style_recommendation(rec):
-    emoji = {"Buy": "🟢", "Hold": "🟠", "Sell": "🔴"}.get(rec, "❓")
-    color = {"Buy": "green", "Hold": "orange", "Sell": "red"}.get(rec, "gray")
-    styled = f"<h2 style='text-align: center; color: {color};'>{emoji} Recommendation: {rec}</h2>"
-    return styled
+def plot_price_chart(data, label):
+    times, values = zip(*data)
+    fig, ax = plt.subplots()
+    ax.plot(times, values, marker='o', linewidth=2)
+    ax.set_title(f"Intraday Price for {label.upper()}")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Price (USD)")
+    ax.grid(True)
+    st.pyplot(fig)
 
-# Main logic
-if submit and symbol:
-    st.markdown(f"<h3 style='text-align: center;'>Analyzing {symbol.upper()}...</h3>", unsafe_allow_html=True)
+def show_recommendation(rec):
+    color_map = {"Buy": "green", "Hold": "orange", "Sell": "red"}
+    emoji_map = {"Buy": "🟢", "Hold": "🟠", "Sell": "🔴"}
+    color = color_map.get(rec, "gray")
+    emoji = emoji_map.get(rec, "❓")
+    st.markdown(
+        f"<h2 style='text-align:center; color:{color};'>Recommendation: {rec} {emoji}</h2>",
+        unsafe_allow_html=True
+    )
+
+if st.button("Analyze") and ticker_input:
+    st.subheader(f"🔍 Analyzing {ticker_input.upper()}...")
 
     # Get recommendation
-    recommendation = get_sentiment_recommendation(symbol)
-    st.markdown(style_recommendation(recommendation), unsafe_allow_html=True)
+    recommendation = get_sentiment_recommendation(ticker_input)
+    show_recommendation(recommendation)
 
-    # Get price chart
-    hist = get_price_chart(symbol)
-    if hist is not None:
-        st.markdown(f"<h4 style='margin-top: 40px;'>📈 Price Chart (Last 30 Days) for {symbol.upper()}</h4>", unsafe_allow_html=True)
-        fig, ax = plt.subplots()
-        ax.plot(hist.index, hist['Close'], color="skyblue")
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Price")
-        ax.set_title(f"{symbol.upper()} - 30 Day Price Trend")
-        st.pyplot(fig)
+    # Try crypto price chart
+    crypto_data = get_crypto_price_data(ticker_input)
+    if crypto_data:
+        plot_price_chart(crypto_data, ticker_input)
     else:
-        st.warning("❌ No price data found. This may not be a supported ticker.")
+        # Fallback to stock price if not a crypto
+        try:
+            stock = yf.Ticker(ticker_input.upper())
+            hist = stock.history(period="1d", interval="1h")
+            if not hist.empty:
+                st.subheader(f"📈 Intraday Price for {ticker_input.upper()}")
+                fig, ax = plt.subplots()
+                ax.plot(hist.index, hist["Close"], marker='o')
+                ax.set_title(f"Intraday Price for {ticker_input.upper()}")
+                ax.set_xlabel("Time")
+                ax.set_ylabel("Price (USD)")
+                st.pyplot(fig)
+            else:
+                st.info("No price data found for this symbol.")
+        except Exception as e:
+            st.error(f"Failed to fetch price data: {e}")
