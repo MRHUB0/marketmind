@@ -1,6 +1,6 @@
 streamlit
 firebase-admin
-openai
+openai>=1.0.0
 python-dotenv
 yfinance
 requests
